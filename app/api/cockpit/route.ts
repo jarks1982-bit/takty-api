@@ -15,6 +15,7 @@ interface CockpitRequest {
     her_style: string;
     notes: string;
     intel_data: Record<string, unknown> | null;
+    evolved_read?: string | null;
   };
   user: {
     age: number;
@@ -24,7 +25,7 @@ interface CockpitRequest {
   };
   images?: string[];
   extract_only?: boolean;
-  feedback?: Array<{ tone_used: string; outcome: string; timestamp: string }>;
+  feedback?: Array<{ tone_used: string; outcome?: string; user_response?: string; timestamp: string }>;
 }
 
 function detectMediaType(base64: string): "image/jpeg" | "image/png" | "image/webp" | "image/gif" {
@@ -178,13 +179,28 @@ Post-date debrief: what went well, what to improve, what to text tomorrow (with 
 - Platform: ${contact.platform} | Vibe: ${contact.vibe || "?"} | Intent: ${contact.intention || "?"}
 - Age range: ${contact.her_age_range || "?"} | Dates: ${contact.dates_count} | Style: ${contact.her_style || "?"}
 - Notes: ${contact.notes || "none"}${intelSection}
+${contact.evolved_read ? `
+## EVOLVED READ (behavioral profile from past interactions)
+${contact.evolved_read}
+This is based on ACTUAL behavior, not just her profile. If this contradicts Intel, trust the evolved read.` : ""}
+${(() => {
+  const msgCount = messages.length;
+  if (msgCount >= 10 && intelQuality !== "none") return `
+## EVOLVED READ AVAILABLE
+You have ${msgCount} messages of conversation history with ${contact.name}. Update your coaching based on:
+- How she actually communicates (not just her profile)
+- Her response patterns and energy fluctuations
+- What topics she lights up about vs what falls flat
+When you notice a pattern worth flagging, mention it: "she consistently responds better to laid-back than confident. adjusting."`;
+  return "";
+})()}
 
 ## USER
 - Age: ${user.age} | Goal: ${user.dating_goal} | Speed: ${user.reply_speed} | Emoji: ${user.emoji_usage}
 ${Array.isArray(feedback) && feedback.length > 0 ? `
 ## PAST RESULTS (what worked/didn't with this contact)
-${feedback.slice(-5).map((f) => `- ${f.tone_used} tone → ${f.outcome}`).join("\n")}
-Use this data. If confident worked before, lean confident. If playful got ghosted, avoid it. Past results are the strongest signal for what to do next.` : ""}`;
+${feedback.slice(-8).map((f) => `- ${f.tone_used} tone → ${f.outcome}${f.user_response ? `: "${f.user_response.slice(0, 80)}"` : ""}`).join("\n")}
+Use this data actively. If confident worked before, lean confident. If playful got ghosted, avoid it. Past results are the strongest signal.` : ""}`;
 
     // Trim to last 8 messages
     const trimmedMessages = messages.slice(-8);
