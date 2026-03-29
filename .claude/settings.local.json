@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Read(//c/Users/ramzi/takty/**)",
+      "Bash(npx create-expo-app:*)",
+      "Bash(cp takty-auth-files/AuthProvider.tsx providers/AuthProvider.tsx)",
+      "Bash(cp takty-auth-files/RootNavigator.tsx navigation/RootNavigator.tsx)",
+      "Bash(cp takty-auth-files/SplashScreen.tsx screens/SplashScreen.tsx)",
+      "Bash(cp takty-auth-files/LoginScreen.tsx screens/LoginScreen.tsx)",
+      "Bash(cp takty-auth-files/OnboardingScreen.tsx screens/OnboardingScreen.tsx)",
+      "Bash(cp C:/Users/ramzi/takty/takty-app/OnboardingScreen.tsx C:/Users/ramzi/takty/takty-app/screens/OnboardingScreen.tsx)",
+      "Bash(rm C:/Users/ramzi/takty/takty-app/OnboardingScreen.tsx)"
+    ]
+  }
+}

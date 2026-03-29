@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "app/api/cockpit/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/intel/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/analyze-response/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
