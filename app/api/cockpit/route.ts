@@ -150,7 +150,7 @@ NEVER generate suggestions that contradict the coaching you just gave. The hold 
 Fields:
 - momentum (0-100): honest. dead conversation = 5-15. ghosting after mistake = 10-20.
 - hold (boolean): true = don't text now. false = go ahead.
-- timing (string): WHEN to act next. "now", "in 20 min", "tomorrow afternoon", "after she responds". Never repeat current time.
+- timing (string): WHEN to act next. MAX 4 WORDS. Examples: "now", "in 20 min", "tomorrow afternoon", "after she responds", "wednesday evening". Not full sentences. Never repeat current time.
 
 ### Message rules
 - Copy-paste ready. NEVER use [brackets].
@@ -166,11 +166,15 @@ When user shares results, factor into subsequent coaching: "confident worked las
 ### Copied suggestion tracking
 When you see [CONTEXT: User copied and likely sent YOUR suggestion], that means they followed YOUR advice. Do NOT criticize them for sending something you recommended. If the suggestion doesn't land well, own it: "my read was off on that one" or "that didn't land how I expected." Never blame the user for following your own coaching.
 
+### New exchange detection
+When the user uploads new screenshots, check if this is a CONTINUATION of the conversation you were just coaching on, or a NEW exchange. Signs it's new: different timing ("just now" vs the previous conversation being "yesterday"), different topic, or the user explicitly says "new conversation" or "different situation." If it's clearly a new exchange, mentally reset your analysis. Don't reference yesterday's coaching unless the user brings it up. Say something like: "new exchange — let me read this fresh."
+When the user selects "Just now" after a session about an older conversation, treat it as new context. Focus on what's in front of you.
+
 ### Silent regeneration
 When the user message is exactly "[REGENERATE]", respond with ONLY a ---SUGGESTIONS--- block. No preamble, no agreement, no "you're right", no "here are new options." Just the block. Generate 3 completely new suggestions with different angles and energy. Do not repeat previous suggestions.
 
 ### Draft rewriting
-When the user message starts with [TAKTIFY] or [REWRITE DRAFT], evaluate their draft in one sentence, then provide a ---SUGGESTIONS--- block with 3 rewritten versions in different tones. Keep the core intent. If the draft is good, say "this is solid, just tightening it up." If bad, say why in one sentence first.
+When the user message starts with [REPHRASE] or [REWRITE DRAFT], evaluate their draft in one sentence, then provide a ---SUGGESTIONS--- block with 3 rewritten versions in different tones. Keep the core intent. If the draft is good, say "this is solid, just tightening it up." If bad, say why in one sentence first.
 
 ### Long messages
 When the user requests a long message (marked with [LONG MESSAGE MODE]), generate 2-3 sentences instead of the usual short format. Still sound human, not AI. No paragraphs.
@@ -242,16 +246,20 @@ Use this data actively. If confident worked before, lean confident. If playful g
     const text = textBlock && "text" in textBlock ? textBlock.text : "";
 
     let suggestions = null;
-    const sugMatch = text.match(/---SUGGESTIONS---\s*([\s\S]*?)\s*---END---/);
+    // Match suggestions block with flexible dash counts and spacing
+    const sugMatch = text.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*?)\s*-{2,}END-{2,}/i);
     if (sugMatch) {
       try {
         suggestions = JSON.parse(sugMatch[1].trim());
       } catch {
-        console.error("Failed to parse suggestions JSON");
+        console.error("Failed to parse suggestions JSON:", sugMatch[1].slice(0, 200));
       }
     }
 
-    const displayText = text.replace(/---SUGGESTIONS---[\s\S]*?---END---/g, "").trim();
+    // Strip suggestions block from display text (robust — handles dash variations)
+    const displayText = text
+      .replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?-{2,}END-{2,}/gi, "")
+      .trim();
 
     return Response.json({ text: displayText, suggestions });
   } catch (error) {
