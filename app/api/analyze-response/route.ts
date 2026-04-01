@@ -128,7 +128,7 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 16000,
+      max_tokens: 4000,
       system: personalityPrompt,
       messages: [{ role: "user", content: contentBlocks }],
     });
