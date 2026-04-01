@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropic, fetchPrompt, getCurrentTimeContext } from "@/lib/ai";
 import { extractSignals, appendObservations, buildProfileContext, triggerSynthesis, PROFILE_SIGNALS_INSTRUCTION } from "@/lib/profile-engine";
+import { evaluateAskOutReadiness } from "@/lib/askout-readiness";
+import { supabase } from "@/lib/ai";
 
 interface CockpitRequest {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
@@ -134,24 +136,26 @@ You are a strategic advisor, not just a message generator.
 - Think like a sharp experienced friend, not a polite AI.
 
 ### Suggestions block (MANDATORY — every response)
-Every response MUST end with:
+Every response ends with ---SUGGESTIONS--- block:
 
 ---SUGGESTIONS---
-{"confident": {"text": "...", "note": "..."}, "playful": {"text": "...", "note": "..."}, "laid_back": {"text": "...", "note": "..."}, "momentum": 75, "hold": false, "timing": "in 10-20 minutes"}
+{"analysis": "Her state is [state]. Momentum is [score] ([band]). Energy balance: [read]. Goal: [goal]. [1-2 sentences].", "momentum": 75, "goal": "connect", "hold": false, "timing": "reply in 20 min", "option_1": {"tone": "[dynamic]", "text": "...", "note": "..."}, "option_2": {"tone": "[dynamic]", "text": "...", "note": "..."}, "option_3": {"tone": "[dynamic]", "text": "...", "note": "..."}}
 ---END---
 
-If advice is don't text: hold=true, timing=when to text next, still include messages.
-NEVER skip this block. The app depends on it.
+Rules for the suggestions block:
+- analysis field comes FIRST. AI thinking scratchpad. 3-5 sentences max.
+- momentum: 0-30 cooling, 30-70 stable, 70-100 building
+- goal: one of connect, make_it_easy, move_forward
+- tone labels are DYNAMIC — pick what fits the moment, not always confident/playful/laid-back
+- coaching notes explain why this works for HER right now
 
-Your ---SUGGESTIONS--- block is the EXECUTION of your analysis above. Generate it AFTER your coaching, not independently.
-- If your analysis says "text her now, match her energy" → hold=false, suggestions match that energy.
-- If your analysis says "don't text, let her come to you" → hold=true, timing=when to act.
-NEVER generate suggestions that contradict the coaching you just gave. The hold field and the messages must align with your advice.
+If advice is don't text:
 
-Fields:
-- momentum (0-100): honest. dead conversation = 5-15. ghosting after mistake = 10-20.
-- hold (boolean): true = don't text now. false = go ahead.
-- timing (string): WHEN to act next. MAX 4 WORDS. Examples: "now", "in 20 min", "tomorrow afternoon", "after she responds", "wednesday evening". Not full sentences. Never repeat current time.
+---SUGGESTIONS---
+{"analysis": "[read explaining why space is the move]", "momentum": 35, "goal": "make_it_easy", "hold": true, "timing": "tomorrow late afternoon", "hold_reason": "she needs space. texting now comes from anxiety, not intent.", "option_1": null, "option_2": null, "option_3": null}
+---END---
+
+NEVER skip this block. Generate it AFTER your coaching, aligned with your advice.
 
 ### Message rules
 - Copy-paste ready. NEVER use [brackets].
@@ -264,7 +268,23 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       .replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?-{2,}END-{2,}/gi, "")
       .trim();
 
-    return Response.json({ text: displayText, suggestions });
+    // Evaluate ask-out readiness
+    let askOut = null;
+    if (contact.id && suggestions && !suggestions.hold) {
+      const { data: contactData } = await supabase
+        .from("contacts")
+        .select("last_momentum_score, interaction_count, current_vibe, intention, dates_count, her_profile, last_askout_at")
+        .eq("id", contact.id)
+        .single();
+      if (contactData) {
+        const readiness = evaluateAskOutReadiness(contactData);
+        if (readiness.ready) {
+          askOut = { ready: true, confidence: readiness.confidence, reason: readiness.reason };
+        }
+      }
+    }
+
+    return Response.json({ text: displayText, suggestions, ask_out: askOut });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Cockpit API error:", msg);

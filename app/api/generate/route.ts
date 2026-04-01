@@ -24,14 +24,20 @@ interface User {
 
 interface GenerateRequest {
   situation: string;
-  contact: Contact;
+  contact: Contact & { id?: string };
   user: User;
+  enrichment?: {
+    momentum?: number;
+    readiness_confidence?: number;
+    recent_messages?: string[];
+    profile_context?: string;
+  };
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateRequest = await request.json();
-    const { situation, contact, user } = body;
+    const { situation, contact, user, enrichment } = body;
 
     if (!situation || !contact || !user) {
       return Response.json(
@@ -74,7 +80,7 @@ export async function POST(request: NextRequest) {
 - Her Style: ${contact.her_style}
 - Notes: ${contact.notes}
 - Intel Data: ${JSON.stringify(contact.intel_data)}
-${buildProfileContext(contact.her_profile ?? null) ? `\n## BEHAVIORAL PROFILE\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${getCurrentTimeContext()}`;
+${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows About Her\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${enrichment ? `\n## Conversation Context${enrichment.momentum ? `\n- Current momentum: ${enrichment.momentum}/100` : ""}${enrichment.readiness_confidence ? `\n- Ask-out readiness: ${enrichment.readiness_confidence}%` : ""}${enrichment.recent_messages?.length ? `\n- Recent exchange:\n${enrichment.recent_messages.join("\n")}` : ""}${enrichment.profile_context ? `\n- Profile: ${enrichment.profile_context}` : ""}` : ""}${getCurrentTimeContext()}`;
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
@@ -86,6 +92,11 @@ ${buildProfileContext(contact.her_profile ?? null) ? `\n## BEHAVIORAL PROFILE\n$
     const textBlock = response.content.find((block) => block.type === "text");
     const text = textBlock && "text" in textBlock ? textBlock.text : "";
     const parsed = JSON.parse(stripMarkdownJson(text));
+
+    // Track ask-out timestamp
+    if (situation === "ask" && contact.id) {
+      await supabase.from("contacts").update({ last_askout_at: new Date().toISOString() }).eq("id", contact.id);
+    }
 
     return Response.json(parsed);
   } catch (error) {

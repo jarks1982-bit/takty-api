@@ -156,19 +156,15 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       );
     }
 
-    // Save vibe + energy + momentum to contact — guard each field
+    // Save momentum to contact — V5.4 format uses flat momentum field
     if (contact.id) {
       const updates: Record<string, unknown> = {};
-      if (parsed.vibe && typeof parsed.vibe === "object") {
-        const vibe = parsed.vibe as Record<string, unknown>;
-        if (vibe.label) updates.current_vibe = vibe.label;
-        if (vibe.detail) updates.last_vibe_detail = vibe.detail;
+      // V5.4: momentum is a flat number
+      if (typeof parsed.momentum === "number") {
+        updates.last_momentum_score = parsed.momentum;
       }
-      if (parsed.energy && typeof parsed.energy === "object") {
-        const energy = parsed.energy as Record<string, unknown>;
-        if (energy.level) updates.last_energy_level = energy.level;
-      }
-      if (parsed.momentum && typeof parsed.momentum === "object") {
+      // V2 backward compat: momentum.score
+      else if (parsed.momentum && typeof parsed.momentum === "object") {
         const momentum = parsed.momentum as Record<string, unknown>;
         if (momentum.score != null) updates.last_momentum_score = momentum.score;
       }
