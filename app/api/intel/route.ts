@@ -100,7 +100,42 @@ ${JSON.stringify(contact, null, 2)}${getCurrentTimeContext()}`,
       );
     }
 
-    return Response.json(parsed);
+    // Build initial her_profile from Intel analysis
+    const initialProfile = {
+      observations: [{
+        type: "pattern",
+        direction: "new",
+        evidence: `Initial intel: ${(parsed as Record<string, unknown>).the_read ? String(((parsed as Record<string, unknown>).the_read as Array<Record<string, unknown>>)?.[0]?.value ?? "unknown").slice(0, 100) : "unknown"}`,
+        source: "screenshot",
+        trust: "high",
+        timestamp: new Date().toISOString(),
+      }],
+      personality: {
+        observed_behaviors: ((parsed as Record<string, unknown>).flags as Record<string, unknown>)?.green ? ((parsed as Record<string, unknown>).flags as Record<string, string[]>).green.slice(0, 3) : [],
+        humor_style: ((parsed as Record<string, unknown>).the_read as Array<Record<string, unknown>>)?.[1]?.value ?? null,
+        confidence: 0.5,
+      },
+      interests: {
+        confirmed: (((parsed as Record<string, unknown>).hooks as Array<Record<string, unknown>>) ?? [])
+          .filter((h) => h.strength === "HIGH")
+          .map((h) => ({ topic: h.item, mentions: 1, engages: null })),
+        mentioned_once: (((parsed as Record<string, unknown>).hooks as Array<Record<string, unknown>>) ?? [])
+          .filter((h) => h.strength !== "HIGH")
+          .map((h) => h.item),
+        avoid: [],
+      },
+      communication: null,
+      what_works: null,
+      attachment_style: null,
+      emotional_depth: null,
+      conflict_style: null,
+      love_language_signals: null,
+      relationship_patterns: null,
+      observation_count: 1,
+      synthesis_count: 0,
+    };
+
+    return Response.json({ ...parsed, _her_profile: initialProfile });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Intel API error:", msg);

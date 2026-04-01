@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { supabase, anthropic, fetchPrompt, stripMarkdownJson, getCurrentTimeContext } from "@/lib/ai";
+import { buildProfileContext } from "@/lib/profile-engine";
 
 interface Contact {
   name: string;
@@ -11,6 +12,7 @@ interface Contact {
   her_style: string;
   notes: string;
   intel_data: Record<string, unknown>;
+  her_profile?: Record<string, unknown> | null;
 }
 
 interface User {
@@ -71,7 +73,8 @@ export async function POST(request: NextRequest) {
 - Intention: ${contact.intention}
 - Her Style: ${contact.her_style}
 - Notes: ${contact.notes}
-- Intel Data: ${JSON.stringify(contact.intel_data)}${getCurrentTimeContext()}`;
+- Intel Data: ${JSON.stringify(contact.intel_data)}
+${buildProfileContext(contact.her_profile ?? null) ? `\n## BEHAVIORAL PROFILE\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${getCurrentTimeContext()}`;
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",

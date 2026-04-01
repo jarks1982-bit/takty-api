@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase, anthropic, fetchPrompt, stripMarkdownJson, getCurrentTimeContext } from "@/lib/ai";
+import { extractSignals, appendObservations, buildProfileContext, triggerSynthesis, PROFILE_SIGNALS_INSTRUCTION } from "@/lib/profile-engine";
 
 interface Contact {
   name: string;
@@ -12,6 +13,7 @@ interface Contact {
   her_style: string;
   notes: string;
   intel_data: Record<string, unknown>;
+  her_profile?: Record<string, unknown> | null;
 }
 
 interface User {
@@ -102,7 +104,9 @@ export async function POST(request: NextRequest) {
 - Intention: ${contact.intention}
 - Her Style: ${contact.her_style}
 - Notes: ${contact.notes}
-- Intel Data: ${JSON.stringify(contact.intel_data)}${getCurrentTimeContext()}`;
+- Intel Data: ${JSON.stringify(contact.intel_data)}
+${buildProfileContext(contact.her_profile ?? null) ? `\n## BEHAVIORAL PROFILE\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${getCurrentTimeContext()}
+${PROFILE_SIGNALS_INSTRUCTION}`;
 
     // Build content blocks: images first (if any), then text
     const contentBlocks: Anthropic.ContentBlockParam[] = [];
@@ -130,13 +134,22 @@ export async function POST(request: NextRequest) {
     });
 
     const textBlock = response.content.find((block) => block.type === "text");
-    const text = textBlock && "text" in textBlock ? textBlock.text : "";
+    const rawText = textBlock && "text" in textBlock ? textBlock.text : "";
+
+    // Extract profile signals
+    const { cleanResponse: cleanedText, signals } = extractSignals(rawText);
+    if (signals.length > 0 && contact.id) {
+      const source = hasImages ? "screenshot" : "cockpit";
+      appendObservations(contact.id, source, signals).then((count) => {
+        if (count > 0 && count % 5 === 0) triggerSynthesis(contact.id!);
+      });
+    }
 
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(stripMarkdownJson(text));
+      parsed = JSON.parse(stripMarkdownJson(cleanedText));
     } catch (parseErr) {
-      console.error("Failed to parse LLM response as JSON:", text.slice(0, 500));
+      console.error("Failed to parse LLM response as JSON:", cleanedText.slice(0, 500));
       return Response.json(
         { error: "AI returned an invalid response. Try again." },
         { status: 502 }

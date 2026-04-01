@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { anthropic, fetchPrompt, getCurrentTimeContext } from "@/lib/ai";
+import { extractSignals, appendObservations, buildProfileContext, triggerSynthesis, PROFILE_SIGNALS_INSTRUCTION } from "@/lib/profile-engine";
 
 interface CockpitRequest {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
@@ -15,7 +16,7 @@ interface CockpitRequest {
     her_style: string;
     notes: string;
     intel_data: Record<string, unknown> | null;
-    evolved_read?: string | null;
+    her_profile?: Record<string, unknown> | null;
   };
   user: {
     age: number;
@@ -200,28 +201,18 @@ Post-date debrief: what went well, what to improve, what to text tomorrow (with 
 - Platform: ${contact.platform} | Vibe: ${contact.vibe || "?"} | Intent: ${contact.intention || "?"}
 - Age range: ${contact.her_age_range || "?"} | Dates: ${contact.dates_count} | Style: ${contact.her_style || "?"}
 - Notes: ${contact.notes || "none"}${intelSection}
-${contact.evolved_read ? `
-## EVOLVED READ (behavioral profile from past interactions)
-${contact.evolved_read}
-This is based on ACTUAL behavior, not just her profile. If this contradicts Intel, trust the evolved read.` : ""}
-${(() => {
-  const msgCount = messages.length;
-  if (msgCount >= 10 && intelQuality !== "none") return `
-## EVOLVED READ AVAILABLE
-You have ${msgCount} messages of conversation history with ${contact.name}. Update your coaching based on:
-- How she actually communicates (not just her profile)
-- Her response patterns and energy fluctuations
-- What topics she lights up about vs what falls flat
-When you notice a pattern worth flagging, mention it: "she consistently responds better to laid-back than confident. adjusting."`;
-  return "";
-})()}
 
 ## USER
 - Age: ${user.age} | Goal: ${user.dating_goal} | Speed: ${user.reply_speed} | Emoji: ${user.emoji_usage}
 ${Array.isArray(feedback) && feedback.length > 0 ? `
 ## PAST RESULTS (what worked/didn't with this contact)
 ${feedback.slice(-8).map((f) => `- ${f.tone_used} tone → ${f.outcome}${f.user_response ? `: "${f.user_response.slice(0, 80)}"` : ""}`).join("\n")}
-Use this data actively. If confident worked before, lean confident. If playful got ghosted, avoid it. Past results are the strongest signal.` : ""}`;
+Use this data actively. If confident worked before, lean confident. If playful got ghosted, avoid it. Past results are the strongest signal.` : ""}
+${(() => {
+  const ctx = buildProfileContext(contact.her_profile ?? null);
+  return ctx ? `\n## BEHAVIORAL PROFILE (learned from past interactions)\n${ctx}` : "";
+})()}
+${PROFILE_SIGNALS_INSTRUCTION}`;
 
     // Trim to last 8 messages
     const trimmedMessages = messages.slice(-8);
@@ -243,11 +234,24 @@ Use this data actively. If confident worked before, lean confident. If playful g
     });
 
     const textBlock = response.content.find((b) => b.type === "text");
-    const text = textBlock && "text" in textBlock ? textBlock.text : "";
+    const rawText = textBlock && "text" in textBlock ? textBlock.text : "";
 
+    // Extract profile signals (strips ---PROFILE_SIGNALS--- block)
+    const { cleanResponse, signals } = extractSignals(rawText);
+
+    // Process signals in background
+    if (signals.length > 0 && contact.id) {
+      const source = "cockpit";
+      appendObservations(contact.id, source, signals).then((count) => {
+        if (count > 0 && count % 5 === 0) {
+          triggerSynthesis(contact.id!);
+        }
+      });
+    }
+
+    // Parse suggestions from the cleaned response
     let suggestions = null;
-    // Match suggestions block with flexible dash counts and spacing
-    const sugMatch = text.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*?)\s*-{2,}END-{2,}/i);
+    const sugMatch = cleanResponse.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*?)\s*-{2,}END-{2,}/i);
     if (sugMatch) {
       try {
         suggestions = JSON.parse(sugMatch[1].trim());
@@ -256,8 +260,7 @@ Use this data actively. If confident worked before, lean confident. If playful g
       }
     }
 
-    // Strip suggestions block from display text (robust — handles dash variations)
-    const displayText = text
+    const displayText = cleanResponse
       .replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?-{2,}END-{2,}/gi, "")
       .trim();
 
