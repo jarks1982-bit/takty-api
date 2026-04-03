@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { supabase, anthropic, fetchPrompt, stripMarkdownJson, getCurrentTimeContext } from "@/lib/ai";
 import { extractSignals, appendObservations, buildProfileContext, triggerSynthesis, PROFILE_SIGNALS_INSTRUCTION } from "@/lib/profile-engine";
+import { buildCoachingContext } from "@/lib/coaching-memory";
 
 interface Contact {
   name: string;
@@ -88,6 +89,20 @@ export async function POST(request: NextRequest) {
       ? `\n## Her Message\n(Extract from the uploaded conversation screenshots)`
       : "";
 
+    // Load coaching memory server-side
+    let coachingSection = "";
+    if (contact.id) {
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("coaching_memory")
+        .eq("id", contact.id)
+        .single();
+      if (contactRow?.coaching_memory) {
+        const ctx = buildCoachingContext(contactRow.coaching_memory as Record<string, unknown>);
+        if (ctx) coachingSection = `\n## COACHING HISTORY\n${ctx}`;
+      }
+    }
+
     const textContent = `${taskPrompt}${screenshotInstruction}${herMessageSection}
 
 ## User Context
@@ -106,7 +121,7 @@ export async function POST(request: NextRequest) {
 - Her Style: ${contact.her_style}
 - Notes: ${contact.notes}
 - Intel Data: ${JSON.stringify(contact.intel_data)}
-${buildProfileContext(contact.her_profile ?? null) ? `\n## BEHAVIORAL PROFILE\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${getCurrentTimeContext()}
+${buildProfileContext(contact.her_profile ?? null) ? `\n## BEHAVIORAL PROFILE\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${coachingSection}${getCurrentTimeContext()}
 ${PROFILE_SIGNALS_INSTRUCTION}`;
 
     // Build content blocks: images first (if any), then text

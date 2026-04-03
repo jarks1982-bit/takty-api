@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { anthropic, fetchPrompt, getCurrentTimeContext, stripMarkdownJson } from "@/lib/ai";
 import { extractSignals, appendObservations, buildProfileContext, triggerSynthesis, PROFILE_SIGNALS_INSTRUCTION } from "@/lib/profile-engine";
 import { evaluateAskOutReadiness } from "@/lib/askout-readiness";
+import { buildCoachingContext } from "@/lib/coaching-memory";
 import { supabase } from "@/lib/ai";
 
 interface CockpitRequest {
@@ -117,6 +118,19 @@ export async function POST(request: NextRequest) {
     const intelSection = intelQuality !== "none"
       ? `\n- Intel Data: ${JSON.stringify(contact.intel_data)}`
       : "";
+
+    // Load coaching memory server-side (not sent from frontend to keep payload small)
+    let coachingContext = "";
+    if (contact.id) {
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("coaching_memory")
+        .eq("id", contact.id)
+        .single();
+      if (contactRow?.coaching_memory) {
+        coachingContext = buildCoachingContext(contactRow.coaching_memory as Record<string, unknown>);
+      }
+    }
 
     // Build cockpit-specific prompt (no voice duplication — that's in system_personality)
     const systemPrompt = `${personalityPrompt || ""}
@@ -252,6 +266,11 @@ ${(() => {
   const ctx = buildProfileContext(contact.her_profile ?? null);
   return ctx ? `\n## BEHAVIORAL PROFILE (learned from past interactions)\n${ctx}` : "";
 })()}
+${coachingContext ? `
+## COACHING HISTORY
+${coachingContext}
+
+Use this context to reference previous sessions naturally. Avoid repeating advice that didn't work. Match coaching style to what he responds to. Do NOT quote this back verbatim or reference session numbers.` : ""}
 ${PROFILE_SIGNALS_INSTRUCTION}`;
 
     // Trim to last 8 messages

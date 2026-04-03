@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { supabase, anthropic, fetchPrompt, stripMarkdownJson, getCurrentTimeContext } from "@/lib/ai";
 import { buildProfileContext } from "@/lib/profile-engine";
+import { buildCoachingContext } from "@/lib/coaching-memory";
 
 interface Contact {
   name: string;
@@ -63,6 +64,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Load coaching memory server-side
+    let coachingSection = "";
+    if (contact.id) {
+      const { data: contactRow } = await supabase
+        .from("contacts")
+        .select("coaching_memory")
+        .eq("id", contact.id)
+        .single();
+      if (contactRow?.coaching_memory) {
+        const ctx = buildCoachingContext(contactRow.coaching_memory as Record<string, unknown>);
+        if (ctx) coachingSection = `\n## COACHING HISTORY\n${ctx}`;
+      }
+    }
+
     const userMessage = `${taskPrompt}
 
 ## User Context
@@ -81,7 +96,7 @@ export async function POST(request: NextRequest) {
 - Her Style: ${contact.her_style}
 - Notes: ${contact.notes}
 - Intel Data: ${JSON.stringify(contact.intel_data)}
-${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows About Her\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${enrichment ? `\n## Conversation Context${enrichment.momentum ? `\n- Current momentum: ${enrichment.momentum}/100` : ""}${enrichment.readiness_confidence ? `\n- Ask-out readiness: ${enrichment.readiness_confidence}%` : ""}${enrichment.recent_messages?.length ? `\n- Recent exchange:\n${enrichment.recent_messages.join("\n")}` : ""}${enrichment.profile_context ? `\n- Profile: ${enrichment.profile_context}` : ""}` : ""}${getCurrentTimeContext()}`;
+${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows About Her\n${buildProfileContext(contact.her_profile ?? null)}` : ""}${coachingSection}${enrichment ? `\n## Conversation Context${enrichment.momentum ? `\n- Current momentum: ${enrichment.momentum}/100` : ""}${enrichment.readiness_confidence ? `\n- Ask-out readiness: ${enrichment.readiness_confidence}%` : ""}${enrichment.recent_messages?.length ? `\n- Recent exchange:\n${enrichment.recent_messages.join("\n")}` : ""}${enrichment.profile_context ? `\n- Profile: ${enrichment.profile_context}` : ""}` : ""}${getCurrentTimeContext()}`;
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
