@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { anthropic, fetchPrompt, getCurrentTimeContext } from "@/lib/ai";
+import { anthropic, fetchPrompt, getCurrentTimeContext, stripMarkdownJson } from "@/lib/ai";
 import { extractSignals, appendObservations, buildProfileContext, triggerSynthesis, PROFILE_SIGNALS_INSTRUCTION } from "@/lib/profile-engine";
 import { evaluateAskOutReadiness } from "@/lib/askout-readiness";
 import { supabase } from "@/lib/ai";
@@ -127,6 +127,20 @@ export async function POST(request: NextRequest) {
 - intel_quality: ${intelQuality}
 
 ## COCKPIT RULES (coaching mode)
+
+### RESPONSE FORMAT (OVERRIDES system prompt OUTPUT FORMAT)
+In this cockpit conversation, do NOT follow the OUTPUT FORMAT section from your system prompt.
+Instead, respond with natural coaching text FIRST, then end with a ---SUGGESTIONS--- block.
+The JSON structure from OUTPUT FORMAT applies INSIDE the suggestions block only.
+
+Format every response like this:
+1. Write coaching response as natural conversational text (this is what the user sees in chat)
+2. End with exactly:
+---SUGGESTIONS---
+{json object}
+---END---
+
+CRITICAL: Do NOT output only JSON. Do NOT skip the coaching text. The user MUST see a natural response in the chat. The ---SUGGESTIONS--- delimiter is mandatory — never output raw JSON without it.
 
 ### Philosophy
 You are a strategic advisor, not just a message generator.
@@ -275,20 +289,67 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       });
     }
 
-    // Parse suggestions from the cleaned response
-    let suggestions = null;
-    const sugMatch = cleanResponse.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*?)\s*-{2,}END-{2,}/i);
-    if (sugMatch) {
-      try {
-        suggestions = JSON.parse(sugMatch[1].trim());
-      } catch {
-        console.error("Failed to parse suggestions JSON:", sugMatch[1].slice(0, 200));
+    // Parse suggestions from the cleaned response (handles multiple AI output formats)
+    let suggestions: Record<string, unknown> | null = null;
+
+    // Try 1: standard delimiters ---SUGGESTIONS--- ... ---END---
+    const sugMatch1 = cleanResponse.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*?)\s*-{2,}END-{2,}/i);
+    if (sugMatch1) {
+      try { suggestions = JSON.parse(stripMarkdownJson(sugMatch1[1])); } catch {}
+    }
+
+    // Try 2: opening delimiter but no ---END--- (AI omitted closing)
+    if (!suggestions) {
+      const sugMatch2 = cleanResponse.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*)/i);
+      if (sugMatch2) {
+        try { suggestions = JSON.parse(stripMarkdownJson(sugMatch2[1])); } catch {}
       }
     }
 
-    const displayText = cleanResponse
-      .replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?-{2,}END-{2,}/gi, "")
-      .trim();
+    // Try 3: entire response is raw JSON (AI skipped coaching text)
+    if (!suggestions) {
+      const trimmed = cleanResponse.trim();
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(stripMarkdownJson(trimmed));
+          if (parsed.momentum !== undefined || parsed.hold !== undefined || parsed.option_1) {
+            suggestions = parsed;
+          }
+        } catch {}
+      }
+    }
+
+    // Try 4: coaching text followed by trailing JSON (no delimiters)
+    if (!suggestions) {
+      const trailingJson = cleanResponse.match(/\n\s*(\{[\s\S]*"(?:momentum|option_1|hold|analysis)"[\s\S]*\})\s*$/);
+      if (trailingJson) {
+        try { suggestions = JSON.parse(stripMarkdownJson(trailingJson[1])); } catch {}
+      }
+    }
+
+    // Build display text: strip all JSON/delimiter artifacts
+    let displayText = cleanResponse;
+    // Strip ---SUGGESTIONS--- block (with or without ---END---)
+    displayText = displayText.replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?(?:-{2,}END-{2,}|$)/gi, "").trim();
+    // Strip ---PROFILE_SIGNALS--- block
+    displayText = displayText.replace(/-{2,}PROFILE_SIGNALS-{2,}[\s\S]*?(?:-{2,}END[_\s]*SIGNALS-{2,}|-{2,}END-{2,}|$)/gi, "").trim();
+
+    // If display text is pure JSON (AI skipped coaching), extract analysis
+    if (displayText.startsWith("{") && displayText.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(displayText);
+        displayText = typeof parsed.analysis === "string" ? parsed.analysis : "";
+      } catch {
+        // Not valid JSON, leave as-is
+      }
+    }
+
+    // Strip trailing JSON that leaked past delimiters
+    const trailingJsonInDisplay = displayText.match(/\n\s*\{[\s\S]*"(?:momentum|option_1|hold|analysis)"[\s\S]*$/);
+    if (trailingJsonInDisplay) {
+      const before = displayText.slice(0, trailingJsonInDisplay.index).trim();
+      if (before.length > 20) displayText = before;
+    }
 
     // ═══ SAFETY ENFORCEMENT ═══
     if (suggestions && user_id) {
