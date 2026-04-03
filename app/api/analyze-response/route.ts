@@ -157,21 +157,33 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       );
     }
 
-    // ═══ THREAT DETECTION ═══
-    if (parsed.threat_detected === true && user_id) {
-      await supabase.from("safety_flags").insert({
-        user_id,
-        contact_id: contact.id || null,
-        flag_type: "threat_detected",
-        ai_analysis: typeof parsed.analysis === "string" ? parsed.analysis : null,
-      });
-      if (contact.id) {
-        await supabase
-          .from("cockpit_sessions")
-          .update({ is_active: false })
-          .eq("contact_id", contact.id)
-          .eq("user_id", user_id)
-          .eq("is_active", true);
+    // ═══ SAFETY ENFORCEMENT ═══
+    if (user_id) {
+      const isThreat = parsed.threat_detected === true;
+      const isBoundaryHold = parsed.hold === true && (
+        /do not re-?engage|permanent|never|blocked/i.test(String(parsed.timing ?? ""))
+        || /boundary|restraining|blocked|harassment|minor|underage/i.test(String(parsed.hold_reason ?? ""))
+      );
+
+      if (isThreat || isBoundaryHold) {
+        await supabase.from("safety_flags").insert({
+          user_id,
+          contact_id: contact.id || null,
+          flag_type: isThreat ? "threat_detected" : "boundary_hold",
+          ai_analysis: typeof parsed.analysis === "string" ? parsed.analysis : null,
+        });
+        parsed.option_1 = null;
+        parsed.option_2 = null;
+        parsed.option_3 = null;
+        parsed.hold = true;
+        if (contact.id) {
+          await supabase
+            .from("cockpit_sessions")
+            .update({ is_active: false })
+            .eq("contact_id", contact.id)
+            .eq("user_id", user_id)
+            .eq("is_active", true);
+        }
       }
     }
 

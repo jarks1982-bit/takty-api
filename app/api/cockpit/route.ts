@@ -290,23 +290,36 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       .replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?-{2,}END-{2,}/gi, "")
       .trim();
 
-    // ═══ THREAT DETECTION ═══
-    if (suggestions?.threat_detected === true && user_id) {
-      // Log safety flag
-      await supabase.from("safety_flags").insert({
-        user_id,
-        contact_id: contact.id || null,
-        flag_type: "threat_detected",
-        ai_analysis: suggestions.analysis || null,
-      });
-      // Deactivate active cockpit session for this contact
-      if (contact.id) {
-        await supabase
-          .from("cockpit_sessions")
-          .update({ is_active: false })
-          .eq("contact_id", contact.id)
-          .eq("user_id", user_id)
-          .eq("is_active", true);
+    // ═══ SAFETY ENFORCEMENT ═══
+    if (suggestions && user_id) {
+      const isThreat = suggestions.threat_detected === true;
+      const isBoundaryHold = suggestions.hold === true && (
+        /do not re-?engage|permanent|never|blocked/i.test(String(suggestions.timing ?? ""))
+        || /boundary|restraining|blocked|harassment|minor|underage/i.test(String(suggestions.hold_reason ?? ""))
+      );
+
+      if (isThreat || isBoundaryHold) {
+        // Log safety flag
+        await supabase.from("safety_flags").insert({
+          user_id,
+          contact_id: contact.id || null,
+          flag_type: isThreat ? "threat_detected" : "boundary_hold",
+          ai_analysis: suggestions.analysis || null,
+        });
+        // Server-side backstop: strip message options even if AI included them
+        suggestions.option_1 = null;
+        suggestions.option_2 = null;
+        suggestions.option_3 = null;
+        suggestions.hold = true;
+        // Deactivate active cockpit session
+        if (contact.id) {
+          await supabase
+            .from("cockpit_sessions")
+            .update({ is_active: false })
+            .eq("contact_id", contact.id)
+            .eq("user_id", user_id)
+            .eq("is_active", true);
+        }
       }
     }
 
