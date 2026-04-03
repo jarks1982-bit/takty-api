@@ -26,6 +26,7 @@ interface GenerateRequest {
   situation: string;
   contact: Contact & { id?: string };
   user: User;
+  user_id?: string;
   enrichment?: {
     momentum?: number;
     readiness_confidence?: number;
@@ -37,7 +38,7 @@ interface GenerateRequest {
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateRequest = await request.json();
-    const { situation, contact, user, enrichment } = body;
+    const { situation, contact, user, user_id, enrichment } = body;
 
     if (!situation || !contact || !user) {
       return Response.json(
@@ -92,6 +93,24 @@ ${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows Abou
     const textBlock = response.content.find((block) => block.type === "text");
     const text = textBlock && "text" in textBlock ? textBlock.text : "";
     const parsed = JSON.parse(stripMarkdownJson(text));
+
+    // ═══ THREAT DETECTION ═══
+    if (parsed.threat_detected === true && user_id) {
+      await supabase.from("safety_flags").insert({
+        user_id,
+        contact_id: contact.id || null,
+        flag_type: "threat_detected",
+        ai_analysis: typeof parsed.analysis === "string" ? parsed.analysis : null,
+      });
+      if (contact.id) {
+        await supabase
+          .from("cockpit_sessions")
+          .update({ is_active: false })
+          .eq("contact_id", contact.id)
+          .eq("user_id", user_id)
+          .eq("is_active", true);
+      }
+    }
 
     // Track ask-out timestamp
     if (situation === "ask" && contact.id) {

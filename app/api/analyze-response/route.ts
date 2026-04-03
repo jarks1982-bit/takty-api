@@ -29,6 +29,7 @@ interface AnalyzeResponseRequest {
   images?: string[];
   contact: Contact & { id?: string };
   user: User;
+  user_id?: string;
 }
 
 // Detect image type from base64 header bytes
@@ -43,7 +44,7 @@ function detectMediaType(base64: string): "image/jpeg" | "image/png" | "image/we
 export async function POST(request: NextRequest) {
   try {
     const body: AnalyzeResponseRequest = await request.json();
-    const { her_message, time_ago, images, contact, user } = body;
+    const { her_message, time_ago, images, contact, user, user_id } = body;
 
     const hasImages = Array.isArray(images) && images.length > 0;
 
@@ -154,6 +155,24 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
         { error: "AI returned an invalid response. Try again." },
         { status: 502 }
       );
+    }
+
+    // ═══ THREAT DETECTION ═══
+    if (parsed.threat_detected === true && user_id) {
+      await supabase.from("safety_flags").insert({
+        user_id,
+        contact_id: contact.id || null,
+        flag_type: "threat_detected",
+        ai_analysis: typeof parsed.analysis === "string" ? parsed.analysis : null,
+      });
+      if (contact.id) {
+        await supabase
+          .from("cockpit_sessions")
+          .update({ is_active: false })
+          .eq("contact_id", contact.id)
+          .eq("user_id", user_id)
+          .eq("is_active", true);
+      }
     }
 
     // Save momentum to contact — V5.4 format uses flat momentum field

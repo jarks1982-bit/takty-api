@@ -26,6 +26,7 @@ interface CockpitRequest {
     reply_speed: string;
     emoji_usage: string;
   };
+  user_id?: string;
   images?: string[];
   extract_only?: boolean;
   feedback?: Array<{ tone_used: string; outcome?: string; user_response?: string; timestamp: string }>;
@@ -67,7 +68,7 @@ Rules:
 export async function POST(request: NextRequest) {
   try {
     const body: CockpitRequest = await request.json();
-    const { messages, contact, user, images, extract_only, feedback } = body;
+    const { messages, contact, user, user_id, images, extract_only, feedback } = body;
 
     if (!contact || !user) {
       return Response.json({ error: "Missing contact or user" }, { status: 400 });
@@ -281,6 +282,26 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
     const displayText = cleanResponse
       .replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?-{2,}END-{2,}/gi, "")
       .trim();
+
+    // ═══ THREAT DETECTION ═══
+    if (suggestions?.threat_detected === true && user_id) {
+      // Log safety flag
+      await supabase.from("safety_flags").insert({
+        user_id,
+        contact_id: contact.id || null,
+        flag_type: "threat_detected",
+        ai_analysis: suggestions.analysis || null,
+      });
+      // Deactivate active cockpit session for this contact
+      if (contact.id) {
+        await supabase
+          .from("cockpit_sessions")
+          .update({ is_active: false })
+          .eq("contact_id", contact.id)
+          .eq("user_id", user_id)
+          .eq("is_active", true);
+      }
+    }
 
     // Evaluate ask-out readiness
     let askOut = null;
