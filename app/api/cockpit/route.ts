@@ -270,7 +270,17 @@ ${coachingContext ? `
 ## COACHING HISTORY
 ${coachingContext}
 
-Use this context to reference previous sessions naturally. Avoid repeating advice that didn't work. Match coaching style to what he responds to. Do NOT quote this back verbatim or reference session numbers.` : ""}
+Use this context to:
+- Reference previous sessions naturally ("last time we talked about this...")
+- Avoid repeating advice that didn't work
+- Match coaching style to what he responds to
+- Build on what was decided in previous sessions
+- CHALLENGE reversals of major decisions — if he decided to end it and now he's back, ask what changed before coaching forward
+
+Do NOT:
+- Repeat the coaching history back verbatim or reference session numbers
+- Say "according to my records" or anything that breaks the friend voice
+- Bring up a reversed decision more than once — one challenge is enough` : ""}
 ${PROFILE_SIGNALS_INSTRUCTION}`;
 
     // Trim to last 8 messages

@@ -22,10 +22,20 @@ interface WhatWorks {
   confidence: number;
 }
 
+interface Decision {
+  decision: string;
+  reason: string;
+  session_number: number;
+  date: string;
+  status: "active" | "revisited" | "superseded";
+  revisited_at: string | null;
+}
+
 export interface CoachingMemory {
   arc?: string;
   his_patterns?: HisPattern[];
   what_works?: WhatWorks[];
+  decisions?: Decision[];
   session_summaries?: SessionSummary[];
   session_count?: number;
   synthesis_count?: number;
@@ -35,12 +45,18 @@ export interface CoachingMemory {
 
 // ─── 1. generateSessionSummary ───
 // Called when a cockpit session is archived. Uses Haiku for speed.
+// Returns { summary, decision } where decision may be null.
+
+interface SummaryResult {
+  summary: string;
+  decision: { type: string; reason: string } | null;
+}
 
 export async function generateSessionSummary(
   sessionMessages: Array<{ role: string; content: string }>,
   contactContext: { name: string; intention: string; dates_count: number }
-): Promise<string> {
-  if (!sessionMessages || sessionMessages.length < 3) return "";
+): Promise<SummaryResult | null> {
+  if (!sessionMessages || sessionMessages.length < 3) return null;
 
   const recentMessages = sessionMessages.slice(-20);
   const messageText = recentMessages
@@ -50,7 +66,7 @@ export async function generateSessionSummary(
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 300,
+      max_tokens: 400,
       messages: [
         {
           role: "user",
@@ -60,30 +76,50 @@ export async function generateSessionSummary(
 - Any notable patterns in how he responds to coaching
 - Where things stand with her
 
+CRITICAL: If a major relationship decision was made in this session, flag it.
+Major decisions include: ending the relationship, taking a break, setting a boundary,
+changing intent (e.g. serious to casual), deciding to go exclusive.
+
 Contact: ${contactContext.name} (intent: ${contactContext.intention}, dates: ${contactContext.dates_count})
 
 Session:
 ${messageText}
 
-Return ONLY the summary, nothing else.`,
+Return a JSON object:
+{"summary": "2-4 sentence summary", "decision": {"type": "end_contact | take_break | set_boundary | change_intent | go_exclusive | null", "reason": "Why (1 sentence)"}}
+
+If no major decision was made, set decision.type to null.
+Return ONLY the JSON, nothing else.`,
         },
       ],
     });
 
     const textBlock = response.content.find((b) => b.type === "text");
-    return textBlock && "text" in textBlock ? textBlock.text.trim() : "";
+    const raw = textBlock && "text" in textBlock ? textBlock.text.trim() : "";
+
+    // Try parsing as JSON
+    try {
+      const parsed = JSON.parse(stripMarkdownJson(raw));
+      return {
+        summary: typeof parsed.summary === "string" ? parsed.summary : raw,
+        decision: parsed.decision?.type && parsed.decision.type !== "null" ? parsed.decision : null,
+      };
+    } catch {
+      // Fallback: treat entire response as plain summary, no decision
+      return { summary: raw, decision: null };
+    }
   } catch (err) {
     console.error("[CoachingMemory] Summary generation failed:", err instanceof Error ? err.message : err);
-    return "";
+    return null;
   }
 }
 
 // ─── 2. appendSessionSummary ───
-// Adds a summary to session_summaries array
+// Adds a summary + optional decision to coaching memory
 
 export function appendSessionSummary(
   memory: CoachingMemory,
-  summary: string,
+  result: SummaryResult,
   sessionNumber: number
 ): CoachingMemory {
   const summaries = Array.isArray(memory.session_summaries) ? [...memory.session_summaries] : [];
@@ -91,20 +127,54 @@ export function appendSessionSummary(
   summaries.push({
     session_number: sessionNumber,
     date: new Date().toISOString(),
-    summary,
+    summary: result.summary,
     outcome: null,
   });
 
-  return { ...memory, session_summaries: summaries };
+  const updated = { ...memory, session_summaries: summaries };
+
+  // Append decision if one was detected
+  if (result.decision && result.decision.type) {
+    const decisions = Array.isArray(updated.decisions) ? [...updated.decisions] : [];
+    decisions.push({
+      decision: result.decision.type,
+      reason: result.decision.reason || "",
+      session_number: sessionNumber,
+      date: new Date().toISOString(),
+      status: "active",
+      revisited_at: null,
+    });
+    updated.decisions = decisions;
+  }
+
+  return updated;
 }
 
 // ─── 3. buildCoachingContext ───
-// Pure function. Reads coaching_memory and outputs 3-5 plain English sentences.
+// Pure function. Reads coaching_memory and outputs plain English sentences.
+// Active decisions surface FIRST — they're the highest priority context.
+
+const DECISION_CONTEXT: Record<string, (reason: string) => string> = {
+  end_contact: (r) => `IMPORTANT: He previously decided to end things with her. Reason: ${r}. If he's re-engaging, challenge this — ask what changed about the situation, not just her texting.`,
+  take_break: (r) => `He decided to take a break from this contact. Reason: ${r}. If he's back early, check if something actually changed.`,
+  set_boundary: (r) => `He set a boundary with her: ${r}. Make sure he's holding it.`,
+  change_intent: (r) => `He changed his intention with her: ${r}. Coach accordingly.`,
+  go_exclusive: (r) => `He decided to pursue exclusivity with her. ${r}.`,
+};
 
 export function buildCoachingContext(memory: CoachingMemory | null): string {
   if (!memory || !memory.session_count || memory.session_count < 2) return "";
 
   const lines: string[] = [];
+
+  // ACTIVE DECISIONS — surface first, always
+  if (memory.decisions && memory.decisions.length > 0) {
+    const active = memory.decisions.filter((d) => d.status === "active");
+    for (const d of active) {
+      const builder = DECISION_CONTEXT[d.decision];
+      if (builder) lines.push(builder(d.reason));
+    }
+  }
 
   if (memory.arc) {
     lines.push(memory.arc);
@@ -134,7 +204,7 @@ export function buildCoachingContext(memory: CoachingMemory | null): string {
     lines.push(`Last session: ${last.summary}`);
   }
 
-  return lines.slice(0, 5).join(" ");
+  return lines.slice(0, 6).join(" ");
 }
 
 // ─── 4. windowSessionSummaries ───
@@ -242,8 +312,8 @@ export async function archiveSessionWithSummary(
 
     if (!contact) return;
 
-    // Generate summary
-    const summary = await generateSessionSummary(sessionMessages, {
+    // Generate summary (includes decision detection)
+    const result = await generateSessionSummary(sessionMessages, {
       name: contact.name,
       intention: contact.intention ?? "unknown",
       dates_count: contact.dates_count ?? 0,
@@ -252,9 +322,21 @@ export async function archiveSessionWithSummary(
     let memory = (contact.coaching_memory as CoachingMemory) ?? {};
     const sessionCount = (memory.session_count ?? 0) + 1;
 
-    if (summary) {
-      memory = appendSessionSummary(memory, summary, sessionCount);
+    if (result) {
+      memory = appendSessionSummary(memory, result, sessionCount);
       memory = windowSessionSummaries(memory);
+    }
+
+    // Decision revisiting: if there were active decisions and the session had 6+ messages
+    // (user continued past the challenge), mark active decisions as revisited
+    if (memory.decisions && sessionMessages.length >= 6) {
+      const active = memory.decisions.filter((d) => d.status === "active");
+      if (active.length > 0) {
+        for (const d of active) {
+          d.status = "revisited";
+          d.revisited_at = new Date().toISOString();
+        }
+      }
     }
 
     memory.session_count = sessionCount;
