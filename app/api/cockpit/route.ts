@@ -323,14 +323,22 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
             const { cleanResponse, signals } = extractSignals(fullText);
 
             if (signals.length > 0 && contact.id) {
-              appendObservations(contact.id, "cockpit", signals).then((count) => {
-                if (count > 0 && count % 5 === 0) triggerSynthesis(contact.id!);
-              });
-            } else if (contact.id) {
+              appendObservations(contact.id, "cockpit", signals).catch((err) =>
+                console.error("[Cockpit/stream] appendObservations error:", err)
+              );
+            }
+
+            if (contact.id) {
               supabase.from("contacts").select("interaction_count").eq("id", contact.id).single().then(({ data }) => {
                 const nc = ((data?.interaction_count as number) ?? 0) + 1;
-                supabase.from("contacts").update({ interaction_count: nc }).eq("id", contact.id!);
-                if (nc % 5 === 0) triggerSynthesis(contact.id!);
+                console.log("[Cockpit/stream] Incrementing interaction_count to:", nc);
+                supabase.from("contacts").update({ interaction_count: nc }).eq("id", contact.id!).then(({ error }) => {
+                  if (error) console.error("[Cockpit/stream] interaction_count update error:", error.message);
+                });
+                if (nc % 5 === 0) {
+                  console.log("[Cockpit/stream] Triggering synthesis at interaction:", nc);
+                  triggerSynthesis(contact.id!);
+                }
               });
             }
 
@@ -401,20 +409,25 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
     // Extract profile signals (strips ---PROFILE_SIGNALS--- block)
     const { cleanResponse, signals } = extractSignals(rawText);
 
-    // Process signals in background
+    // Process signals in background (if any)
     if (signals.length > 0 && contact.id) {
-      const source = "cockpit";
-      appendObservations(contact.id, source, signals).then((count) => {
-        if (count > 0 && count % 5 === 0) {
-          triggerSynthesis(contact.id!);
-        }
-      });
-    } else if (contact.id) {
-      // Increment interaction_count even when no signals extracted (strategy conversations still count)
+      appendObservations(contact.id, "cockpit", signals).catch((err) =>
+        console.error("[Cockpit] appendObservations error:", err)
+      );
+    }
+
+    // ALWAYS increment interaction_count — every coaching interaction counts
+    if (contact.id) {
       supabase.from("contacts").select("interaction_count").eq("id", contact.id).single().then(({ data }) => {
         const newCount = ((data?.interaction_count as number) ?? 0) + 1;
-        supabase.from("contacts").update({ interaction_count: newCount }).eq("id", contact.id!);
-        if (newCount % 5 === 0) triggerSynthesis(contact.id!);
+        console.log("[Cockpit] Incrementing interaction_count to:", newCount, "for contact:", contact.id);
+        supabase.from("contacts").update({ interaction_count: newCount }).eq("id", contact.id!).then(({ error }) => {
+          if (error) console.error("[Cockpit] interaction_count update error:", error.message);
+        });
+        if (newCount % 5 === 0) {
+          console.log("[Cockpit] Triggering synthesis at interaction:", newCount);
+          triggerSynthesis(contact.id!);
+        }
       });
     }
 
