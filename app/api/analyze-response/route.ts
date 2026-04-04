@@ -212,9 +212,14 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       }
     }
 
-    // Save momentum to contact (V5.4 flat format)
+    // Save momentum to contact (V5.4 flat format) + append to history
     if (contact.id && typeof parsed.momentum === "number") {
-      await supabase.from("contacts").update({ last_momentum_score: parsed.momentum }).eq("id", contact.id);
+      const { data: histRow } = await supabase.from("contacts").select("momentum_history").eq("id", contact.id).single();
+      const history = Array.isArray((histRow as Record<string, unknown>)?.momentum_history)
+        ? (histRow as Record<string, unknown>).momentum_history as Array<{ score: number; date: string }>
+        : [];
+      const updated = [...history, { score: parsed.momentum as number, date: new Date().toISOString() }].slice(-30);
+      await supabase.from("contacts").update({ last_momentum_score: parsed.momentum, momentum_history: updated }).eq("id", contact.id);
     }
 
     return Response.json(parsed);
