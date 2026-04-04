@@ -92,17 +92,16 @@ export async function appendObservations(
     timestamp,
   }));
 
-  // Fetch current profile
+  // Fetch current profile (do NOT touch interaction_count — cockpit route handles that)
   const { data } = await supabase
     .from("contacts")
-    .select("her_profile, interaction_count")
+    .select("her_profile")
     .eq("id", contactId)
     .single();
 
   const profile = (data?.her_profile as HerProfile) ?? {};
   const existingObs = Array.isArray(profile.observations) ? profile.observations : [];
   const updatedObs = [...existingObs, ...newObservations];
-  const newCount = (data?.interaction_count ?? 0) + 1;
 
   await supabase
     .from("contacts")
@@ -112,11 +111,10 @@ export async function appendObservations(
         observations: updatedObs,
         observation_count: updatedObs.length,
       },
-      interaction_count: newCount,
     })
     .eq("id", contactId);
 
-  return newCount;
+  return updatedObs.length;
 }
 
 // ─── 3. buildProfileContext ───
