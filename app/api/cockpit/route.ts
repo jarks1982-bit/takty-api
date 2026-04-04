@@ -329,15 +329,15 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
             }
 
             if (contact.id) {
-              supabase.from("contacts").select("interaction_count").eq("id", contact.id).single().then(({ data }) => {
-                const nc = ((data?.interaction_count as number) ?? 0) + 1;
-                console.log("[Cockpit/stream] Incrementing interaction_count to:", nc);
-                supabase.from("contacts").update({ interaction_count: nc }).eq("id", contact.id!).then(({ error }) => {
-                  if (error) console.error("[Cockpit/stream] interaction_count update error:", error.message);
-                });
-                if (nc % 5 === 0) {
-                  console.log("[Cockpit/stream] Triggering synthesis at interaction:", nc);
-                  triggerSynthesis(contact.id!);
+              supabase.rpc("increment_interaction_count", { contact_id: contact.id }).then(({ data: newCount, error }) => {
+                if (error) {
+                  console.error("[Cockpit/stream] interaction_count increment error:", error.message);
+                } else {
+                  console.log("[Cockpit/stream] interaction_count now:", newCount);
+                  if (newCount && newCount % 5 === 0) {
+                    console.log("[Cockpit/stream] Triggering synthesis at interaction:", newCount);
+                    triggerSynthesis(contact.id!);
+                  }
                 }
               });
             }
@@ -416,17 +416,17 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       );
     }
 
-    // ALWAYS increment interaction_count — every coaching interaction counts
+    // ALWAYS increment interaction_count — atomic database increment, no race conditions
     if (contact.id) {
-      supabase.from("contacts").select("interaction_count").eq("id", contact.id).single().then(({ data }) => {
-        const newCount = ((data?.interaction_count as number) ?? 0) + 1;
-        console.log("[Cockpit] Incrementing interaction_count to:", newCount, "for contact:", contact.id);
-        supabase.from("contacts").update({ interaction_count: newCount }).eq("id", contact.id!).then(({ error }) => {
-          if (error) console.error("[Cockpit] interaction_count update error:", error.message);
-        });
-        if (newCount % 5 === 0) {
-          console.log("[Cockpit] Triggering synthesis at interaction:", newCount);
-          triggerSynthesis(contact.id!);
+      supabase.rpc("increment_interaction_count", { contact_id: contact.id }).then(({ data: newCount, error }) => {
+        if (error) {
+          console.error("[Cockpit] interaction_count increment error:", error.message);
+        } else {
+          console.log("[Cockpit] interaction_count now:", newCount, "for contact:", contact.id);
+          if (newCount && newCount % 5 === 0) {
+            console.log("[Cockpit] Triggering synthesis at interaction:", newCount);
+            triggerSynthesis(contact.id!);
+          }
         }
       });
     }
