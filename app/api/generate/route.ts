@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { supabase, anthropic, fetchPrompt, stripMarkdownJson, getCurrentTimeContext } from "@/lib/ai";
-import { buildProfileContext } from "@/lib/profile-engine";
+import { buildProfileContext, triggerSynthesis } from "@/lib/profile-engine";
 import { buildCoachingContext } from "@/lib/coaching-memory";
 
 interface Contact {
@@ -147,8 +147,10 @@ ${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows Abou
     // Increment interaction_count atomically
     if (contact.id) {
       supabase.rpc("increment_interaction_count", { contact_id: contact.id })
-        .then(({ error }) => {
+        .then(({ data: nc, error }) => {
           if (error) console.error("[Generate] interaction_count error:", error.message);
+          else console.log("[Generate] interaction_count now:", nc);
+          if (nc && nc % 5 === 0) triggerSynthesis(contact.id!);
         });
     }
 
