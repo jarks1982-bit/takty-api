@@ -144,7 +144,7 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
+      max_tokens: 2000,
       system: personalityPrompt,
       messages: [{ role: "user", content: contentBlocks }],
     });
@@ -156,9 +156,19 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
     const { cleanResponse: cleanedText, signals } = extractSignals(rawText);
     if (signals.length > 0 && contact.id) {
       const source = hasImages ? "screenshot" : "cockpit";
-      appendObservations(contact.id, source, signals).then((count) => {
-        if (count > 0 && count % 5 === 0) triggerSynthesis(contact.id!);
-      });
+      appendObservations(contact.id, source, signals).catch((err) =>
+        console.error("[AnalyzeResponse] appendObservations error:", err)
+      );
+    }
+
+    // Increment interaction_count atomically
+    if (contact.id) {
+      supabase.rpc("increment_interaction_count", { contact_id: contact.id })
+        .then(({ data: nc, error }) => {
+          if (error) console.error("[AnalyzeResponse] interaction_count error:", error.message);
+          else console.log("[AnalyzeResponse] interaction_count now:", nc);
+          if (nc && nc % 5 === 0) triggerSynthesis(contact.id!);
+        });
     }
 
     let parsed: Record<string, unknown>;
@@ -202,21 +212,9 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       }
     }
 
-    // Save momentum to contact — V5.4 format uses flat momentum field
-    if (contact.id) {
-      const updates: Record<string, unknown> = {};
-      // V5.4: momentum is a flat number
-      if (typeof parsed.momentum === "number") {
-        updates.last_momentum_score = parsed.momentum;
-      }
-      // V2 backward compat: momentum.score
-      else if (parsed.momentum && typeof parsed.momentum === "object") {
-        const momentum = parsed.momentum as Record<string, unknown>;
-        if (momentum.score != null) updates.last_momentum_score = momentum.score;
-      }
-      if (Object.keys(updates).length > 0) {
-        await supabase.from("contacts").update(updates).eq("id", contact.id);
-      }
+    // Save momentum to contact (V5.4 flat format)
+    if (contact.id && typeof parsed.momentum === "number") {
+      await supabase.from("contacts").update({ last_momentum_score: parsed.momentum }).eq("id", contact.id);
     }
 
     return Response.json(parsed);

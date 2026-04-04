@@ -100,7 +100,7 @@ ${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows Abou
 
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
+      max_tokens: 2000,
       system: personalityPrompt,
       messages: [{ role: "user", content: userMessage }],
     });
@@ -142,6 +142,14 @@ ${buildProfileContext(contact.her_profile ?? null) ? `\n## What Suavo Knows Abou
     // Track ask-out timestamp
     if (situation === "ask" && contact.id) {
       await supabase.from("contacts").update({ last_askout_at: new Date().toISOString() }).eq("id", contact.id);
+    }
+
+    // Increment interaction_count atomically
+    if (contact.id) {
+      supabase.rpc("increment_interaction_count", { contact_id: contact.id })
+        .then(({ error }) => {
+          if (error) console.error("[Generate] interaction_count error:", error.message);
+        });
     }
 
     return Response.json(parsed);
