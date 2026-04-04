@@ -29,6 +29,7 @@ interface CockpitRequest {
   };
   user_id?: string;
   stream?: boolean;
+  last_suggestions?: Array<{ tone: string; text: string }>;
   images?: string[];
   extract_only?: boolean;
   feedback?: Array<{ tone_used: string; outcome?: string; user_response?: string; timestamp: string }>;
@@ -70,7 +71,7 @@ Rules:
 export async function POST(request: NextRequest) {
   try {
     const body: CockpitRequest = await request.json();
-    const { messages, contact, user, user_id, stream: streamMode, images, extract_only, feedback } = body;
+    const { messages, contact, user, user_id, stream: streamMode, last_suggestions, images, extract_only, feedback } = body;
 
     if (!contact || !user) {
       return Response.json({ error: "Missing contact or user" }, { status: 400 });
@@ -263,6 +264,12 @@ ${Array.isArray(feedback) && feedback.length > 0 ? `
 ## PAST RESULTS (what worked/didn't with this contact)
 ${feedback.slice(-8).map((f) => `- ${f.tone_used} tone → ${f.outcome}${f.user_response ? `: "${f.user_response.slice(0, 80)}"` : ""}`).join("\n")}
 Use this data actively. If confident worked before, lean confident. If playful got ghosted, avoid it. Past results are the strongest signal.` : ""}
+${Array.isArray(last_suggestions) && last_suggestions.length > 0 ? `
+## LAST SUGGESTIONS YOU GAVE
+You previously suggested these messages for him to send:
+${last_suggestions.map((s, i) => `- Option ${i + 1} (${s.tone}): "${s.text}"`).join("\n")}
+
+If you see any of these in a screenshot he uploads, YOU suggested them. Do not critique him for sending a message you recommended. If it didn't land well, own it.` : ""}
 ${(() => {
   const ctx = buildProfileContext(contact.her_profile ?? null);
   return ctx ? `\n## BEHAVIORAL PROFILE (learned from past interactions)\n${ctx}` : "";
