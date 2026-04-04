@@ -326,6 +326,12 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
               appendObservations(contact.id, "cockpit", signals).then((count) => {
                 if (count > 0 && count % 5 === 0) triggerSynthesis(contact.id!);
               });
+            } else if (contact.id) {
+              supabase.from("contacts").select("interaction_count").eq("id", contact.id).single().then(({ data }) => {
+                const nc = ((data?.interaction_count as number) ?? 0) + 1;
+                supabase.from("contacts").update({ interaction_count: nc }).eq("id", contact.id!);
+                if (nc % 5 === 0) triggerSynthesis(contact.id!);
+              });
             }
 
             // Parse suggestions (same 4-fallback logic)
@@ -402,6 +408,13 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
         if (count > 0 && count % 5 === 0) {
           triggerSynthesis(contact.id!);
         }
+      });
+    } else if (contact.id) {
+      // Increment interaction_count even when no signals extracted (strategy conversations still count)
+      supabase.from("contacts").select("interaction_count").eq("id", contact.id).single().then(({ data }) => {
+        const newCount = ((data?.interaction_count as number) ?? 0) + 1;
+        supabase.from("contacts").update({ interaction_count: newCount }).eq("id", contact.id!);
+        if (newCount % 5 === 0) triggerSynthesis(contact.id!);
       });
     }
 

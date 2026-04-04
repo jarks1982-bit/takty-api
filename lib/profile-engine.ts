@@ -37,6 +37,8 @@ const SOURCE_TRUST: Record<string, "high" | "medium" | "low"> = {
   debrief: "medium",
   feedback: "medium",
   cockpit: "medium",
+  user_report: "medium",
+  inference: "low",
   user_interpretation: "low",
 };
 
@@ -284,9 +286,12 @@ Return JSON with: personality (string), communication (string), what_works (stri
 export const PROFILE_SIGNALS_INSTRUCTION = `
 
 ---PROFILE_SIGNALS---
-After your coaching response, output a profile signals block.
-Extract 1-3 observations about HER from this interaction.
-Each observation MUST use this exact format:
+After your coaching response, extract behavioral observations about HER from ANY source in this interaction:
+- Her actual messages in screenshots → HIGH trust
+- Things the user tells you about her behavior ("she shut down", "she came back asking questions") → MEDIUM trust
+- Patterns you infer from context ("she's cycling between curiosity and overwhelm") → LOW trust
+
+Extract 1-3 observations. Each MUST use this format:
 {"signals": [
 {
 "type": "engagement|tone|timing|interest|pattern|outcome|strategy_outcome",
@@ -294,11 +299,17 @@ Each observation MUST use this exact format:
 "evidence": "specific observable behavior, max 15 words"
 }
 ]}
+
+Examples of extractable signals from user descriptions:
+- "she shut down when I brought it up" → type: pattern, direction: new, evidence: "avoids confrontation, needs processing time"
+- "she came back the next day asking questions" → type: engagement, direction: increase, evidence: "re-engages after space with curiosity"
+- "she's been hot and cold all week" → type: pattern, direction: stable, evidence: "emotional cycling, inconsistent engagement pattern"
+- "she loves talking about food" → type: interest, direction: confirmed, evidence: "food is high-engagement topic"
+
 RULES:
-- Only note what is EVIDENT from her messages or the situation.
-- Evidence must be specific and observable, not interpretive.
-- Do NOT repeat a previously observed pattern unless this interaction provides NEW evidence.
-- If nothing new is observable, return {"signals": []}
-- When the user reports a failed approach, log as type: strategy_outcome, direction: negative.
-- When the user reports success, log as type: strategy_outcome, direction: confirmed.
+- Extract from ANY source — screenshots, user reports, inferences. Do NOT skip just because no screenshot was uploaded.
+- Evidence must be concise — max 15 words.
+- Do NOT repeat a previously observed pattern unless NEW evidence.
+- If the interaction is purely about his feelings with zero info about her, return {"signals": []}
+- Err on the side of extracting. If the user revealed anything about her behavior, log it.
 ---END_SIGNALS---`;
