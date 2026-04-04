@@ -28,6 +28,7 @@ interface CockpitRequest {
     emoji_usage: string;
   };
   user_id?: string;
+  stream?: boolean;
   images?: string[];
   extract_only?: boolean;
   feedback?: Array<{ tone_used: string; outcome?: string; user_response?: string; timestamp: string }>;
@@ -69,7 +70,7 @@ Rules:
 export async function POST(request: NextRequest) {
   try {
     const body: CockpitRequest = await request.json();
-    const { messages, contact, user, user_id, images, extract_only, feedback } = body;
+    const { messages, contact, user, user_id, stream: streamMode, images, extract_only, feedback } = body;
 
     if (!contact || !user) {
       return Response.json({ error: "Missing contact or user" }, { status: 400 });
@@ -295,6 +296,92 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
       claudeMessages.unshift({ role: "user", content: "hey, I need help with a conversation" });
     }
 
+    // ═══ STREAMING MODE ═══
+    if (streamMode) {
+      const encoder = new TextEncoder();
+      const readableStream = new ReadableStream({
+        async start(controller) {
+          try {
+            let fullText = "";
+
+            const stream = anthropic.messages.stream({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 1500,
+              system: systemPrompt,
+              messages: claudeMessages,
+            });
+
+            for await (const event of stream) {
+              if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+                const chunk = event.delta.text;
+                fullText += chunk;
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text", content: chunk })}\n\n`));
+              }
+            }
+
+            // Stream complete — run all post-processing on the full text
+            const { cleanResponse, signals } = extractSignals(fullText);
+
+            if (signals.length > 0 && contact.id) {
+              appendObservations(contact.id, "cockpit", signals).then((count) => {
+                if (count > 0 && count % 5 === 0) triggerSynthesis(contact.id!);
+              });
+            }
+
+            // Parse suggestions (same 4-fallback logic)
+            let suggestions: Record<string, unknown> | null = null;
+            const s1 = cleanResponse.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*?)\s*-{2,}END-{2,}/i);
+            if (s1) { try { suggestions = JSON.parse(stripMarkdownJson(s1[1])); } catch {} }
+            if (!suggestions) { const s2 = cleanResponse.match(/-{2,}SUGGESTIONS-{2,}\s*([\s\S]*)/i); if (s2) { try { suggestions = JSON.parse(stripMarkdownJson(s2[1])); } catch {} } }
+            if (!suggestions) { const t = cleanResponse.trim(); if (t.startsWith("{") && t.endsWith("}")) { try { const p = JSON.parse(stripMarkdownJson(t)); if (p.momentum !== undefined || p.hold !== undefined || p.option_1) suggestions = p; } catch {} } }
+            if (!suggestions) { const tj = cleanResponse.match(/\n\s*(\{[\s\S]*"(?:momentum|option_1|hold|analysis)"[\s\S]*\})\s*$/); if (tj) { try { suggestions = JSON.parse(stripMarkdownJson(tj[1])); } catch {} } }
+
+            // Build display text
+            let displayText = cleanResponse;
+            displayText = displayText.replace(/-{2,}SUGGESTIONS-{2,}[\s\S]*?(?:-{2,}END-{2,}|$)/gi, "").trim();
+            displayText = displayText.replace(/-{2,}PROFILE_SIGNALS-{2,}[\s\S]*?(?:-{2,}END[_\s]*SIGNALS-{2,}|-{2,}END-{2,}|$)/gi, "").trim();
+            if (displayText.startsWith("{") && displayText.endsWith("}")) { try { const p = JSON.parse(displayText); displayText = typeof p.analysis === "string" ? p.analysis : ""; } catch {} }
+            const tjd = displayText.match(/\n\s*\{[\s\S]*"(?:momentum|option_1|hold|analysis)"[\s\S]*$/);
+            if (tjd) { const b = displayText.slice(0, tjd.index).trim(); if (b.length > 20) displayText = b; }
+
+            // Safety enforcement
+            if (suggestions && user_id) {
+              const isThreat = suggestions.threat_detected === true;
+              const isBoundary = suggestions.hold === true && (
+                /do not re-?engage|permanent|never|blocked/i.test(String(suggestions.timing ?? ""))
+                || /boundary|restraining|blocked|harassment|minor|underage/i.test(String(suggestions.hold_reason ?? ""))
+              );
+              if (isThreat || isBoundary) {
+                await supabase.from("safety_flags").insert({ user_id, contact_id: contact.id || null, flag_type: isThreat ? "threat_detected" : "boundary_hold", ai_analysis: suggestions.analysis || null });
+                suggestions.option_1 = null; suggestions.option_2 = null; suggestions.option_3 = null; suggestions.hold = true;
+                if (contact.id) { await supabase.from("cockpit_sessions").update({ is_active: false }).eq("contact_id", contact.id).eq("user_id", user_id).eq("is_active", true); }
+              }
+            }
+
+            // Ask-out readiness
+            let askOut = null;
+            if (contact.id && suggestions && !suggestions.hold) {
+              const { data: cd } = await supabase.from("contacts").select("last_momentum_score, interaction_count, current_vibe, intention, dates_count, her_profile, last_askout_at").eq("id", contact.id).single();
+              if (cd) { const r = evaluateAskOutReadiness(cd); if (r.ready) askOut = { ready: true, confidence: r.confidence, reason: r.reason }; }
+            }
+
+            // Send final done event with parsed data
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", suggestions, cleanedText: displayText, ask_out: askOut })}\n\n`));
+            controller.close();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Something went wrong";
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: msg })}\n\n`));
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(readableStream, {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
+      });
+    }
+
+    // ═══ NON-STREAMING MODE (existing) ═══
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1500,
