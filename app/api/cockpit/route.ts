@@ -55,7 +55,14 @@ function evaluateIntelQuality(intel: Record<string, unknown> | null): "strong" |
 
 const EXTRACTION_PROMPT = `You are a text extraction tool. Read the conversation screenshot carefully.
 
-Rules:
+CRITICAL — accuracy rules:
+- Only transcribe messages that are clearly visible in the screenshot.
+- If a message is partially cut off or unclear, transcribe only what is visible. Do not complete or infer the rest.
+- Do not add, invent, or infer any messages beyond what is explicitly shown in the image.
+- If you cannot confidently read a message, skip it entirely.
+- Never complete a sentence or conversation that appears cut off.
+
+Formatting rules:
 - Messages on the RIGHT side of the screen were sent by HIM (the user)
 - Messages on the LEFT side were sent by HER
 - This is universal across iMessage, Instagram, WhatsApp, Hinge, Bumble, Tinder, and every platform
@@ -63,9 +70,7 @@ Rules:
 - Format each line as: HIM: [exact message text] or HER: [exact message text]
 - The LAST message is the most important — clearly identify who sent it
 - If you see emoji reactions (hearts, likes) on messages, note them in parentheses
-- If you cannot read a message clearly, write: [unreadable]
 - Do NOT analyze, comment, or give advice. ONLY extract text.
-- Do NOT invent or guess messages that aren't clearly visible
 - After extracting all messages, add a final line: "LAST SENT BY: HIM" or "LAST SENT BY: HER"`;
 
 export async function POST(request: NextRequest) {
