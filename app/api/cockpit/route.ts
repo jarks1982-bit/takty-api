@@ -33,6 +33,20 @@ interface CockpitRequest {
   images?: string[];
   extract_only?: boolean;
   feedback?: Array<{ tone_used: string; outcome?: string; user_response?: string; timestamp: string }>;
+  time_ago?: string;
+}
+
+function interpretTiming(timeAgo: string): { response_delay_minutes: number; conversation_staleness: "fresh" | "warm" | "cold" } {
+  const t = (timeAgo || "").toLowerCase();
+  if (t.includes("just") || t.includes("now") || t.includes("minute"))
+    return { response_delay_minutes: 5, conversation_staleness: "fresh" };
+  if (t.includes("hour"))
+    return { response_delay_minutes: 120, conversation_staleness: "fresh" };
+  if (t.includes("today"))
+    return { response_delay_minutes: 240, conversation_staleness: "warm" };
+  if (t.includes("yesterday"))
+    return { response_delay_minutes: 1440, conversation_staleness: "warm" };
+  return { response_delay_minutes: 2880, conversation_staleness: "cold" };
 }
 
 function detectMediaType(base64: string): "image/jpeg" | "image/png" | "image/webp" | "image/gif" {
@@ -76,7 +90,8 @@ Formatting rules:
 export async function POST(request: NextRequest) {
   try {
     const body: CockpitRequest = await request.json();
-    const { messages, contact, user, user_id, stream: streamMode, last_suggestions, images, extract_only, feedback } = body;
+    const { messages, contact, user, user_id, stream: streamMode, last_suggestions, images, extract_only, feedback, time_ago } = body;
+    const timing = interpretTiming(time_ago || "");
 
     if (!contact || !user) {
       return Response.json({ error: "Missing contact or user" }, { status: 400 });
@@ -126,16 +141,77 @@ export async function POST(request: NextRequest) {
       ? `\n- Intel Data: ${JSON.stringify(contact.intel_data)}`
       : "";
 
-    // Load coaching memory server-side (not sent from frontend to keep payload small)
+    // Load coaching memory + last_known_state server-side
     let coachingContext = "";
+    let lastKnownState: Record<string, unknown> | null = null;
     if (contact.id) {
       const { data: contactRow } = await supabase
         .from("contacts")
-        .select("coaching_memory")
+        .select("coaching_memory, last_known_state")
         .eq("id", contact.id)
         .single();
       if (contactRow?.coaching_memory) {
         coachingContext = buildCoachingContext(contactRow.coaching_memory as Record<string, unknown>);
+      }
+      if (contactRow?.last_known_state) {
+        lastKnownState = contactRow.last_known_state as Record<string, unknown>;
+      }
+    }
+
+    // Load last 5 messages from most recent archived session — only on a brand-new session
+    const isNewSession = !messages || messages.length <= 1;
+    let priorSessionContext = "";
+    if (isNewSession && contact.id && user_id) {
+      const { data: prevSession } = await supabase
+        .from("cockpit_sessions")
+        .select("text_messages, messages, updated_at")
+        .eq("contact_id", contact.id)
+        .eq("user_id", user_id)
+        .eq("is_active", false)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (prevSession) {
+        const prev = ((prevSession.text_messages ?? prevSession.messages ?? []) as Array<{ role: string; content: string }>).slice(-5);
+        if (prev.length > 0) {
+          priorSessionContext = prev
+            .map((m) => `${m.role === "user" ? "HIM" : "YOU"}: ${(m.content ?? "").slice(0, 300)}`)
+            .join("\n");
+        }
+      }
+    }
+
+    // ═══ SESSION MEMORY COMPRESSION ═══
+    // Keep last 6 messages as multi-turn; compress everything older into a structured block.
+    let sessionMemoryBlock = "";
+    if (messages.length > 6) {
+      const older = messages.slice(0, -6);
+      const transcript = older
+        .map((m) => `${m.role === "user" ? "HIM" : "SUAVO"}: ${m.content}`)
+        .join("\n");
+      try {
+        const memResp = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 600,
+          system: `You compress earlier coaching-conversation messages into a structured memory block.
+Output EXACTLY this format with no preamble, no extra text:
+
+## SESSION MEMORY (earlier in this conversation)
+- Her traits observed: [extracted from earlier messages, or "none yet"]
+- Dynamic: [who's leading, who's qualifying, energy balance]
+- Open loops: [topics raised but not resolved, or "none"]
+- User frame: [how he's been showing up — confident, over-asking, etc.]
+- Key decisions made: [anything Suavo recommended that user acted on, or "none"]
+
+Be terse. One line per field. No narrative.`,
+          messages: [{ role: "user", content: `Earlier transcript:\n${transcript}` }],
+        });
+        const memBlock = memResp.content.find((b) => b.type === "text");
+        if (memBlock && "text" in memBlock) {
+          sessionMemoryBlock = memBlock.text.trim();
+        }
+      } catch (err) {
+        console.error("[Cockpit] session memory compression error:", err instanceof Error ? err.message : err);
       }
     }
 
@@ -146,6 +222,9 @@ export async function POST(request: NextRequest) {
 - current_time: ${getCurrentTimeContext()}
 - intent: ${contact.intention || "unclear"}
 - intel_quality: ${intelQuality}
+- response_delay_minutes: ${timing.response_delay_minutes}
+- conversation_staleness: ${timing.conversation_staleness}${lastKnownState ? `
+- last_known_state: ${JSON.stringify(lastKnownState)}` : ""}
 
 ## COCKPIT RULES (coaching mode)
 
@@ -279,6 +358,11 @@ ${(() => {
   const ctx = buildProfileContext(contact.her_profile ?? null);
   return ctx ? `\n## BEHAVIORAL PROFILE (learned from past interactions)\n${ctx}` : "";
 })()}
+${priorSessionContext ? `
+## PRIOR SESSION (last messages from your most recent coaching session with him about her)
+${priorSessionContext}
+
+Use this only for continuity — pick up naturally if relevant. Do NOT recap it back. If this session is clearly a new situation, ignore it.` : ""}
 ${coachingContext ? `
 ## COACHING HISTORY
 ${coachingContext}
@@ -294,10 +378,11 @@ Do NOT:
 - Repeat the coaching history back verbatim or reference session numbers
 - Say "according to my records" or anything that breaks the friend voice
 - Bring up a reversed decision more than once — one challenge is enough` : ""}
+${sessionMemoryBlock ? `\n${sessionMemoryBlock}\n` : ""}
 ${PROFILE_SIGNALS_INSTRUCTION}`;
 
-    // Trim to last 8 messages
-    const trimmedMessages = messages.slice(-8);
+    // Multi-turn: keep last 6 messages as proper turns; older are compressed in sessionMemoryBlock
+    const trimmedMessages = messages.slice(-6);
 
     const claudeMessages: Anthropic.MessageParam[] = trimmedMessages.map((msg) => ({
       role: msg.role,
@@ -382,6 +467,21 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
                 suggestions.option_1 = null; suggestions.option_2 = null; suggestions.option_3 = null; suggestions.hold = true;
                 if (contact.id) { await supabase.from("cockpit_sessions").update({ is_active: false }).eq("contact_id", contact.id).eq("user_id", user_id).eq("is_active", true); }
               }
+            }
+
+            // Persist last_known_state snapshot
+            if (contact.id && suggestions) {
+              const analysisStr = typeof suggestions.analysis === "string" ? suggestions.analysis : null;
+              await supabase.from("contacts").update({
+                last_known_state: {
+                  her_state: analysisStr ? analysisStr.slice(0, 200) : null,
+                  momentum: suggestions.momentum ?? null,
+                  hold: suggestions.hold ?? false,
+                  timing: suggestions.timing ?? null,
+                  goal: suggestions.goal ?? null,
+                  updated_at: new Date().toISOString(),
+                },
+              }).eq("id", contact.id);
             }
 
             // Ask-out readiness
@@ -536,6 +636,21 @@ ${PROFILE_SIGNALS_INSTRUCTION}`;
             .eq("is_active", true);
         }
       }
+    }
+
+    // Persist last_known_state snapshot for next-turn drift detection
+    if (contact.id && suggestions) {
+      const analysisStr = typeof suggestions.analysis === "string" ? suggestions.analysis : null;
+      await supabase.from("contacts").update({
+        last_known_state: {
+          her_state: analysisStr ? analysisStr.slice(0, 200) : null,
+          momentum: suggestions.momentum ?? null,
+          hold: suggestions.hold ?? false,
+          timing: suggestions.timing ?? null,
+          goal: suggestions.goal ?? null,
+          updated_at: new Date().toISOString(),
+        },
+      }).eq("id", contact.id);
     }
 
     // Evaluate ask-out readiness
